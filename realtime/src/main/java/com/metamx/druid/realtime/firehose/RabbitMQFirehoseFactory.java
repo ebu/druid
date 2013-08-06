@@ -99,14 +99,18 @@ public class RabbitMQFirehoseFactory implements FirehoseFactory
     boolean exclusive = config.isExclusive();
     boolean autoDelete = config.isAutoDelete();
 
-    final Connection connection = connectionFactory.newConnection();
+    Connection connection = connectionFactory.newConnection();
     connection.addShutdownListener(new ShutdownListener()
     {
       @Override
       public void shutdownCompleted(ShutdownSignalException cause)
       {
         log.warn(cause, "Connection closed!");
-        //FUTURE: we could try to re-establish the connection here. Not done in this version though.
+        try {
+            connection = connectionFactory.newConnection();
+        } catch (ShutdownSignalException e) {
+            //FIXME should retry there
+        }
       }
     });
 
@@ -119,7 +123,12 @@ public class RabbitMQFirehoseFactory implements FirehoseFactory
       public void shutdownCompleted(ShutdownSignalException cause)
       {
         log.warn(cause, "Channel closed!");
-        //FUTURE: we could try to re-establish the connection here. Not done in this version though.
+        try {
+            //connection = connectionFactory.newConnection();
+            channel.basic_recovery();
+        } catch (ShutdownSignalException e) {
+            //FIXME should retry
+        }
       }
     });
 
