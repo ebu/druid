@@ -87,6 +87,46 @@ public class RabbitMQFirehoseFactory implements FirehoseFactory
     this.config = config;
     this.parser = parser;
   }
+  
+  class RestartListener implements ShutdownListener {
+
+      private Connection connection;
+
+      public RestartListener(Connection connection) {
+        this.connection = connection;
+      }
+
+      public void shutdownCompleted(ShutdownSignalException cause) {
+        log.warn(cause, "Connection closed!");
+        try {
+            this.connection = connectionFactory.newConnection();
+        } catch (IOException e) {
+            log.warn(e, "Error while connecting, this is normally pretty bad, will retry in some time");
+        }
+      }
+  }
+
+  class RestartChannelListener implements ShutdownListener {
+
+      private Connection connection;
+
+      private Channel channel;
+       
+      public RestartChannelListener(Connection connection, Channel channel) {
+          this.connection = connection;
+          this.channel = channel;
+      }
+
+      public void shutdownCompleted(ShutdownSignalException cause) {
+          log.warn(cause, "Channel closed!");
+          try {
+              this.connection = connectionFactory.newConnection();
+              this.channel.basicRecover();
+          } catch (IOException e) {
+              log.warn(e, "Error while connecting this is normally pretty bad, will retry in some time");
+          }
+      }
+  }
 
   @Override
   public Firehose connect() throws IOException
@@ -99,38 +139,13 @@ public class RabbitMQFirehoseFactory implements FirehoseFactory
     boolean exclusive = config.isExclusive();
     boolean autoDelete = config.isAutoDelete();
 
-    Connection connection = connectionFactory.newConnection();
-    connection.addShutdownListener(new ShutdownListener()
-    {
-      @Override
-      public void shutdownCompleted(ShutdownSignalException cause)
-      {
-        log.warn(cause, "Connection closed!");
-        try {
-            connection = connectionFactory.newConnection();
-        } catch (ShutdownSignalException e) {
-            //FIXME should retry there
-        }
-      }
-    });
+    final Connection connection = connectionFactory.newConnection();
+    connection.addShutdownListener(new RestartListener(connection));
 
     final Channel channel = connection.createChannel();
     channel.queueDeclare(queue, durable, exclusive, autoDelete, null);
     channel.queueBind(queue, exchange, routingKey);
-    channel.addShutdownListener(new ShutdownListener()
-    {
-      @Override
-      public void shutdownCompleted(ShutdownSignalException cause)
-      {
-        log.warn(cause, "Channel closed!");
-        try {
-            //connection = connectionFactory.newConnection();
-            channel.basic_recovery();
-        } catch (ShutdownSignalException e) {
-            //FIXME should retry
-        }
-      }
-    });
+    channel.addShutdownListener(new RestartChannelListener(connection, channel));
 
     // We create a QueueingConsumer that will not auto-acknowledge messages since that
     // happens on commit().
